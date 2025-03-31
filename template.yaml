@@ -1,0 +1,407 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'S3 to OpenSearch ingestion via SQS and Lambda'
+
+Parameters:
+  OpenSearchDomainName:
+    Type: String
+    Default: 'my-opensearch-domain'
+    Description: 'Name for the OpenSearch domain'
+
+  OpenSearchMasterUser:
+    Type: String
+    Description: 'Master username for OpenSearch'
+    MinLength: 4
+  
+  OpenSearchMasterPassword:
+    Type: String
+    Description: 'Master password for OpenSearch'
+    MinLength: 8
+    NoEcho: true
+  
+  S3BucketName:
+    Type: String
+    Description: 'Name of the S3 bucket'
+
+  LambdaLayerArn:
+    Type: String
+    Description: 'ARN of the Lambda Layer containing opensearch-py and requests-aws4auth'
+
+Resources:
+  # OpenSearch Domain
+  OpenSearchDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: !Ref OpenSearchDomainName
+      EngineVersion: 'OpenSearch_2.5'
+      ClusterConfig:
+        InstanceType: 't3.small.search'
+        InstanceCount: 1
+        DedicatedMasterEnabled: false
+      EBSOptions:
+        EBSEnabled: true
+        VolumeSize: 10
+        VolumeType: 'gp2'
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: 'es:*'
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'    
+      EncryptionAtRestOptions:
+        Enabled: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: true
+        MasterUserOptions:
+          MasterUserName: !Ref OpenSearchMasterUser
+          MasterUserPassword: !Ref OpenSearchMasterPassword
+
+
+  # S3 Bucket
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Main SQS Queue
+  IngestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 1209600
+
+  # SQS Queue Policy
+  IngestQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: 
+        - !Ref IngestQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:*
+            Resource: !GetAtt IngestQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt DataBucket.Arn
+
+  # Update bucket notifications after policies are in place
+  UpdateBucketNotifications:
+    Type: Custom::S3BucketNotification
+    DependsOn: 
+      - IngestQueuePolicy
+      - DataBucket
+    Properties:
+      ServiceToken: !GetAtt NotificationFunction.Arn
+      BucketName: !Ref DataBucket
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Queue: !GetAtt IngestQueue.Arn
+
+  # Lambda function to update bucket notifications
+  NotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt NotificationFunctionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          
+          def handler(event, context):
+              try:
+                  print (event)
+                  if event['RequestType'] in ['Create', 'Update']:
+                      s3 = boto3.client('s3')
+                      bucket = event['ResourceProperties']['BucketName']
+                      raw_config = event['ResourceProperties']['NotificationConfiguration']
+                      
+                      # Format the notification configuration properly
+                      notification_config = {
+                          'QueueConfigurations': [
+                              {
+                                  'QueueArn': queue_config['Queue'],  # Use the Queue ARN
+                                  'Events': [queue_config['Event']]   # Events must be a list
+                              }
+                              for queue_config in raw_config['QueueConfigurations']
+                          ]
+                      }
+                      
+                      # Put the notification configuration
+                      s3.put_bucket_notification_configuration(
+                          Bucket=bucket,
+                          NotificationConfiguration=notification_config
+                      )
+                      print(f"Successfully configured notifications for bucket {bucket}")
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+      Runtime: python3.9
+      Timeout: 30
+
+  # IAM role for notification function
+  NotificationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3NotificationAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketNotification
+                Resource: !GetAtt DataBucket.Arn
+
+  # Lambda Execution Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3SQSOpenSearchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: 
+                  - !GetAtt IngestQueue.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: 
+                  - !GetAtt IngestQueue.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "${DataBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - es:ESHttp*
+                Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'
+
+  # Main Lambda Function
+  IngestFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.9
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          from opensearchpy import OpenSearch, RequestsHttpConnection
+          from requests.auth import HTTPBasicAuth
+
+          def create_opensearch_client():
+              """Create OpenSearch client with basic auth"""
+              host = os.environ['OPENSEARCH_ENDPOINT']
+              username = os.environ['OPENSEARCH_USERNAME']
+              password = os.environ['OPENSEARCH_PASSWORD']
+              
+              return OpenSearch(
+                  hosts=[{'host': host, 'port': 443}],
+                  http_auth=(username, password),
+                  use_ssl=True,
+                  verify_certs=True,
+                  connection_class=RequestsHttpConnection
+              )
+          def create_index_if_not_exists(client, index_name):
+              """Create index with mapping if it doesn't exist"""
+              try:
+                  print("before create index")
+                  res = client.indices.exists(index=index_name)
+                  print(f"Index exists: {res}")
+                  if not client.indices.exists(index=index_name):
+                      mapping = {
+                          "mappings": {
+                              "properties": {
+                                  "content": {
+                                      "type": "text",
+                                      "analyzer": "standard"
+                                  },
+                                  "source": {
+                                      "properties": {
+                                          "bucket": {"type": "keyword"},
+                                          "key": {"type": "keyword"},
+                                          "last_modified": {"type": "date", "ignore_malformed": True},
+                                          "size": {"type": "long"}
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      client.indices.create(index=index_name, body=mapping)
+                      print(f"Created index {index_name}")
+              except Exception as e:
+                  print(f"Error creating index: {str(e)}")
+                  raise
+
+          def process_file(s3_client, bucket, key):
+              """Process the TXT file from S3"""
+              try:
+                  # Get the file from S3
+                  response = s3_client.get_object(Bucket=bucket, Key=key)
+                  file_content = response['Body'].read().decode('utf-8')
+                  
+                  # Create document data
+                  document_data = {
+                      'content': file_content,
+                      'source': {
+                          'bucket': bucket,
+                          'key': key,
+                          'last_modified': str(response['LastModified']),
+                          'size': response['ContentLength']
+                      }
+                  }
+                  
+                  return document_data
+              except Exception as e:
+                  print(f"Error processing file {key}: {str(e)}")
+                  raise
+
+          def handler(event, context):
+              """Lambda handler"""
+              try:
+                  print(f"Event: {json.dumps(event)}")
+                  s3_client = boto3.client('s3')
+                  opensearch_client = create_opensearch_client()
+                  print("after create opensearch client")
+                  index_name = os.environ.get('OPENSEARCH_INDEX', 'txt-documents')
+                  print(f"Index name: {index_name}")
+                  # Ensure index exists
+                  create_index_if_not_exists(opensearch_client, index_name)
+                  print("after create index")
+                  # Process each record
+                  processed_records = []
+                  failed_records = []
+                  
+                  for record in event['Records']:
+                      try:
+                          # Parse SQS message to get S3 event
+                          body = json.loads(record['body'])
+                          print(f"Body: {body}")
+                          s3_record = body['Records'][0]
+                          print(f"S3 Record: {s3_record}")
+                          bucket = s3_record['s3']['bucket']['name']
+                          key = s3_record['s3']['object']['key']
+
+                          print(f"Processing file: {key}")
+                          # Only process TXT files
+                          if not key.lower().endswith('.txt'):
+                              print(f"Skipping non-TXT file: {key}")
+                              continue
+                          
+                          # Process the file
+                          document_data = process_file(s3_client, bucket, key)
+                          
+                          # Index the document
+                          response = opensearch_client.index(
+                              index=index_name,
+                              body=document_data,
+                              id=f"{bucket}/{key}",  # Use S3 location as document ID
+                              refresh=True
+                          )
+                          
+                          print(f"Successfully indexed document {key}: {response}")
+                          processed_records.append(key)
+                          
+                      except Exception as e:
+                          print(f"Error processing record: {str(e)}")
+                          continue
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'processed': processed_records,
+                          'failed': failed_records
+                      })
+                  }
+                  
+              except Exception as e:
+                  print(f"Fatal error: {str(e)}")
+                  raise
+      Layers:
+        - !Ref LambdaLayerArn
+      Timeout: 300
+      MemorySize: 256
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !GetAtt OpenSearchDomain.DomainEndpoint
+          OPENSEARCH_USERNAME: !Ref OpenSearchMasterUser
+          OPENSEARCH_PASSWORD: !Ref OpenSearchMasterPassword
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+  # Lambda Permission for SQS
+  LambdaSQSPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt IngestFunction.Arn
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt IngestQueue.Arn
+
+  # Lambda Event Source Mapping
+  LambdaEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt IngestQueue.Arn
+      FunctionName: !GetAtt IngestFunction.Arn
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 30
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+Outputs:
+  OpenSearchDomainEndpoint:
+    Description: 'OpenSearch domain endpoint'
+    Value: !GetAtt OpenSearchDomain.DomainEndpoint
+  
+  S3BucketName:
+    Description: 'Name of the S3 bucket'
+    Value: !Ref DataBucket
+  
+  SQSQueueURL:
+    Description: 'URL of the SQS queue'
+    Value: !Ref IngestQueue

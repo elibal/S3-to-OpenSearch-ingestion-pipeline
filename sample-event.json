@@ -1,0 +1,20 @@
+{
+    "Records": [
+      {
+        "messageId": "b4c0d7a1-2e6a-406d-8113-b3179",
+        "receiptHandle": "AQEB64Z1H7oLjhg5vvfFM8eBc8NlLbAYdN8FulrnwuKcLJUsQPdPhQ0O4yV7d2tKmCz/9g3pP2J7cS2KevMdTzHqRRrQqbBzWDM/j3t7yU05BdKdc5isa/smlHnS+1mKucJYLtF9hSTzlkd//c2ip/XQCs45bm2mXUsCVmA29kEnsAZ+dotPztQpqZGK8ZHUCLU6hJG2rTCGEyCRb/OVXiSEj0FSERFMjmBk3aY/m1I/nNIMGbhwd5Qi4ghXGbNbxKaWkiT7n8sqFPGP7OrazMiBWI5kRYcBobYAQxI4Hph/RZevwR8hZ6ZN5dPlFKa9TDIIGXIj+oMYlwltxTD3LVbB7Pg5mh9ubo9Ti7/ld7+UFE/Q1C258wzEKiBoOAkZtvkZ3qpEjEKl8/eFYaT9kbNv",
+        "body": "{\"Records\":[{\"eventVersion\":\"2.1\",\"eventSource\":\"aws:s3\",\"awsRegion\":\"il-central-1\",\"eventTime\":\"2025-03-26T21:35:21.383Z\",\"eventName\":\"ObjectCreated:Put\",\"userIdentity\":{\"principalId\":\"AWS:AROA57VDMAOG2LKARCEWQ\"},\"requestParameters\":{\"sourceIPAddress\":\"\"},\"responseElements\":{\"x-amz-request-id\":\"\",\"x-amz-id-2\":\"C9YIscEwww29TFguvdZa/B/y2g49JYp4yLRQqZsMq+b74wAw9KrdpRQ6nhOA072H5dVaIWgng1Qqhe2S46H+VgKTBoqmlmA2\"},\"s3\":{\"s3SchemaVersion\":\"1.0\",\"configurationId\":\"OTc4NGVkZmItMDBhZC00NmZmLWJlMWItYjI2OTE3NjJjNDBj\",\"bucket\":{\"name\":\"<BUCKET NAME>\",\"ownerIdentity\":{\"principalId\":\"ASO5254J4YRK5\"},\"arn\":\"arn:aws:s3:::<BUCKET NAME>\"},\"object\":{\"key\":\"<FILE NAME>.txt\",\"size\":518,\"eTag\":\"1bb1f6fff324707c773fae55b8b69c02\",\"versionId\":\"z13hdkB0a.DU2wxHQTdm25FCzTpWRIMy\",\"sequencer\":\"0067E473195AEFC0C5\"}}}]}",
+        "attributes": {
+          "ApproximateReceiveCount": "1",
+          "SentTimestamp": "1743024922665",
+          "SenderId": "AROAQYHTWRRUFEJHJL6X6:S3-PROD-END",
+          "ApproximateFirstReceiveTimestamp": "1743024922669"
+        },
+        "messageAttributes": {},
+        "md5OfBody": "30d95e56d560d3c622c9557",
+        "eventSource": "aws:sqs",
+        "eventSourceARN": "arn:aws:sqs:il-central-1:<account id>:<SQS id>",
+        "awsRegion": "il-central-1"
+      }
+    ]
+  }
